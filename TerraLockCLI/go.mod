@@ -1,6 +1,6 @@
-module TerraLockCLI
+module TerraLockClI
 
-go 1.25.3
+go 1.25.1
 
 require (
 	github.com/inconshreveable/mousetrap v1.1.0 // indirect
