@@ -6,6 +6,12 @@ package cmd
 import (
 	"fmt"
 
+	"context"
+	"log"
+
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/config"
+	"github.com/aws/aws-sdk-go-v2/service/ec2"
 	"github.com/spf13/cobra"
 )
 
@@ -21,6 +27,33 @@ This application is a tool to generate the needed files
 to quickly create a Cobra application.`,
 	Run: func(cmd *cobra.Command, args []string) {
 		fmt.Println("scan called")
+		// Load the Shared AWS Configuration (~/.aws/config)
+		cfg, err := config.LoadDefaultConfig(context.TODO())
+		if err != nil {
+			log.Fatal(err)
+		}
+		// Create an Amazon S3 service client
+		client := ec2.NewFromConfig(cfg)
+
+		// Get the first page of results for ListObjectsV2 for a bucket
+		output, err := client.DescribeInstances(context.TODO(), &ec2.DescribeInstancesInput{})
+		if err != nil {
+			log.Fatal(err)
+		}
+
+		log.Println("EC2 Instances:")
+		for _, reservation := range output.Reservations {
+			for _, instance := range reservation.Instances {
+				log.Printf(
+					"InstanceID=%s State=%s Type=%s AZ=%s",
+					aws.ToString(instance.InstanceId),
+					string(instance.State.Name),
+					string(instance.InstanceType),
+					aws.ToString(instance.Placement.AvailabilityZone),
+				)
+			}
+		}
+
 	},
 }
 
