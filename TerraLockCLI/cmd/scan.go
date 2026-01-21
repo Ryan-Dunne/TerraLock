@@ -1,13 +1,12 @@
-/*
-Copyright © 2025 NAME HERE <EMAIL ADDRESS>
-*/
 package cmd
 
 import (
-	"fmt"
-
 	"context"
+	"encoding/json"
+	"fmt"
 	"log"
+	"os"
+	"time"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/config"
@@ -15,58 +14,67 @@ import (
 	"github.com/spf13/cobra"
 )
 
-// scanCmd represents the scan command
+type InstanceInfo struct {
+	InstanceID string `json:"instance_id"`
+	Ami        string `json:"ami"`
+	Type       string `json:"type"`
+	AZ         string `json:"availability_zone"`
+}
+
 var scanCmd = &cobra.Command{
 	Use:   "scan",
 	Short: "Scan AWS for drift",
-	Long: `A longer description that spans multiple lines and likely contains examples
-and usage of using your command. For example:
-
-Cobra is a CLI library for Go that empowers applications.
-This application is a tool to generate the needed files
-to quickly create a Cobra application.`,
+	Long:  "Scans AWS EC2 instances and outputs a pretty‑printed JSON report.",
 	Run: func(cmd *cobra.Command, args []string) {
 		fmt.Println("scan called")
-		// Load the Shared AWS Configuration (~/.aws/config)
+
 		cfg, err := config.LoadDefaultConfig(context.TODO())
 		if err != nil {
 			log.Fatal(err)
 		}
-		// Create an Amazon S3 service client
+
 		client := ec2.NewFromConfig(cfg)
 
-		// Get the first page of results for ListObjectsV2 for a bucket
 		output, err := client.DescribeInstances(context.TODO(), &ec2.DescribeInstancesInput{})
 		if err != nil {
 			log.Fatal(err)
 		}
 
-		log.Println("EC2 Instances:")
+		var instances []InstanceInfo
+
 		for _, reservation := range output.Reservations {
 			for _, instance := range reservation.Instances {
-				log.Printf(
-					"InstanceID=%s State=%s Type=%s AZ=%s",
-					aws.ToString(instance.InstanceId),
-					string(instance.State.Name),
-					string(instance.InstanceType),
-					aws.ToString(instance.Placement.AvailabilityZone),
-				)
+				instances = append(instances, InstanceInfo{
+					InstanceID: aws.ToString(instance.InstanceId),
+					Ami:        aws.ToString(instance.ImageId),
+					Type:       string(instance.InstanceType),
+					AZ:         aws.ToString(instance.Placement.AvailabilityZone),
+				})
 			}
 		}
 
+		// Pretty print JSON
+		pretty, err := json.MarshalIndent(instances, "", "  ")
+		if err != nil {
+			log.Fatal(err)
+		}
+
+		// Print to console
+		fmt.Println(string(pretty))
+
+		// Auto-generate output filename
+		filename := fmt.Sprintf("scan-output-%d.json", time.Now().Unix())
+
+		// Write file
+		err = os.WriteFile(filename, pretty, 0644)
+		if err != nil {
+			log.Fatal(err)
+		}
+
+		fmt.Printf("Output written to %s\n", filename)
 	},
 }
 
 func init() {
 	rootCmd.AddCommand(scanCmd)
-
-	// Here you will define your flags and configuration settings.
-
-	// Cobra supports Persistent Flags which will work for this command
-	// and all subcommands, e.g.:
-	// scanCmd.PersistentFlags().String("foo", "", "A help for foo")
-
-	// Cobra supports local flags which will only run when this command
-	// is called directly, e.g.:
-	// scanCmd.Flags().BoolP("toggle", "t", false, "Help message for toggle")
 }
