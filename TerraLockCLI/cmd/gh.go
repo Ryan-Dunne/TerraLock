@@ -5,7 +5,9 @@ import (
 	"encoding/json"
 	"fmt"
 	"log"
+	"os"
 	"os/exec"
+	"time"
 
 	"github.com/spf13/cobra"
 )
@@ -56,6 +58,30 @@ without cloning the repository.`,
 		}
 
 		fmt.Println(string(decoded))
+
+		var pretty []byte
+		var jsonObj interface{}
+
+		if json.Unmarshal(decoded, &jsonObj) == nil {
+			pretty, err = json.MarshalIndent(jsonObj, "", "  ")
+			if err != nil {
+				log.Fatalf("failed to pretty print JSON: %v", err)
+			}
+		} else {
+			// Not JSON → store raw text as-is
+			pretty = decoded
+		}
+
+		// Auto-generate output filename
+		filename := fmt.Sprintf("gh-output-%d.json", time.Now().Unix())
+
+		// Write file
+		err = os.WriteFile(filename, pretty, 0644)
+		if err != nil {
+			log.Fatalf("failed to write output: %v", err)
+		}
+
+		fmt.Printf("Output written to %s\n", filename)
 
 	},
 }
