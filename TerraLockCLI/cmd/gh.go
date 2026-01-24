@@ -73,7 +73,7 @@ without cloning the repository.`,
 		}
 
 		// Auto-generate output filename
-		filename := fmt.Sprintf("gh-output-%d.json", time.Now().Unix())
+		filename := fmt.Sprintf("gh-output-%d.tf", time.Now().Unix())
 
 		// Write file
 		err = os.WriteFile(filename, pretty, 0644)
