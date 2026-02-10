@@ -66,7 +66,7 @@ var scanfullCmd = &cobra.Command{
 
 		fmt.Printf("Output written to %s\n", filename)
 
-		return ghCmd()
+		//	return ghCmd()
 	},
 }
 

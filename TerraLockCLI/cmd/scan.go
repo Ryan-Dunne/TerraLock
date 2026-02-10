@@ -1,6 +1,7 @@
 package cmd
 
 import (
+	"TerraLock/TerraLockCLI/mapper"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -72,6 +73,9 @@ var scanCmd = &cobra.Command{
 		}
 
 		fmt.Printf("Output written to %s\n", filename)
+		result, err := mapper.FindInstances("C:\\Users\\RyanJ\\Desktop\\TerraLock\\TerraLockCLI\\scan-output-1769269407.json")
+		print("Mapper------------\n\n")
+		fmt.Printf("%+v\n", result) //Debug print
 	},
 }
 
