@@ -60,8 +60,11 @@ var scanCmd = &cobra.Command{
 			log.Fatal(err)
 		}
 
-		// Print to console
-		fmt.Println(string(pretty))
+		fmt.Println("\n== Instances ==")
+		fmt.Println("----------------")
+		for _, instance := range instances {
+			fmt.Printf("- id=%s ami=%s type=%s az=%s\n", instance.InstanceID, instance.Ami, instance.Type, instance.AZ)
+		}
 
 		// Auto-generate output filename
 		filename := fmt.Sprintf("scan-output-%d.json", time.Now().Unix())
@@ -73,9 +76,31 @@ var scanCmd = &cobra.Command{
 		}
 
 		fmt.Printf("Output written to %s\n", filename)
+
 		result, err := mapper.FindInstances("C:\\Users\\RyanJ\\Desktop\\TerraLock\\TerraLockCLI\\scan-output-1769269407.json")
-		print("Mapper------------\n\n")
-		fmt.Printf("%+v\n", result) //Debug print
+		if err != nil {
+			log.Fatal(err)
+		}
+		fmt.Println("\n== Mapper ==")
+		fmt.Println("----------------")
+		for _, inst := range result {
+			fmt.Printf("- id=%s ami=%s type=%s az=%s\n", inst.Instance, inst.AMI, inst.Type, inst.AvailabilityZone)
+		}
+
+		terraform, err := mapper.ParseTerraform("C:\\Users\\RyanJ\\Desktop\\TerraLock\\TerraLockCLI\\gh-output-1769271472.tf")
+		if err != nil {
+			log.Fatal(err)
+		}
+		fmt.Println("\n== Terraform Resources ==")
+		fmt.Println("-------------------------")
+		for _, resource := range terraform {
+			fmt.Printf("- %s.%s", resource.Type, resource.Name)
+			for key, value := range resource.Attributes {
+				fmt.Printf(" %s=%s", key, value)
+			}
+			fmt.Println()
+		}
+
 	},
 }
 
