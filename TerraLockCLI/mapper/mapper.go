@@ -12,6 +12,7 @@ import (
 
 type AwsInstance struct {
 	Instance         string `json:"instance_id"`
+	Name             string `json:"name"`
 	AMI              string `json:"ami"`
 	Type             string `json:"type"`
 	AvailabilityZone string `json:"availability_zone"`
