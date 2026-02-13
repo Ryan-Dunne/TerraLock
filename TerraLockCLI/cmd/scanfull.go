@@ -1,11 +1,15 @@
 package cmd
 
 import (
+	"TerraLock/TerraLockCLI/mapper"
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"log"
 	"os"
+	"os/exec"
+	"path/filepath"
 	"time"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
@@ -14,31 +18,92 @@ import (
 	"github.com/spf13/cobra"
 )
 
+var (
+	ghRepo     string
+	ghFilePath string
+)
+
 var scanfullCmd = &cobra.Command{
-	Use:   "scan",
-	Short: "Scan AWS for drift",
-	Long:  "Scans AWS EC2 instances and outputs a pretty‑printed JSON report.",
+	Use:   "scanfull",
+	Short: "Fetch Terraform from GitHub and scan AWS for drift",
+	Long:  "Fetches a Terraform file from GitHub, scans AWS EC2 instances, and generates missing resources.",
 	Run: func(cmd *cobra.Command, args []string) {
 		fmt.Println("scanfull called")
 
+		//1: Get Terraform file
+		if ghRepo == "" || ghFilePath == "" {
+			log.Fatal("You must specify --repo <owner/repo> and --file <path/to/file>")
+		}
+
+		fmt.Printf("\n== Fetching from GitHub: %s/%s ==\n", ghRepo, ghFilePath)
+		apiCmd := exec.Command("gh", "api",
+			fmt.Sprintf("repos/%s/contents/%s", ghRepo, ghFilePath),
+		)
+
+		ghOutput, err := apiCmd.Output()
+		if err != nil {
+			log.Fatalf("gh api failed: %v", err)
+		}
+
+		var resp struct {
+			Content  string `json:"content"`
+			Encoding string `json:"encoding"`
+		}
+
+		if err := json.Unmarshal(ghOutput, &resp); err != nil {
+			log.Fatalf("failed to parse JSON: %v", err)
+		}
+
+		decoded, err := base64.StdEncoding.DecodeString(resp.Content)
+		if err != nil {
+			log.Fatalf("failed to decode file content: %v", err)
+		}
+
+		var pretty []byte
+		var jsonObj interface{}
+
+		if json.Unmarshal(decoded, &jsonObj) == nil {
+			pretty, err = json.MarshalIndent(jsonObj, "", "  ")
+			if err != nil {
+				log.Fatalf("failed to pretty print JSON: %v", err)
+			}
+		} else {
+			pretty = decoded
+		}
+
+		ghOutputFilename := fmt.Sprintf("gh-output-%d.tf", time.Now().Unix())
+		err = os.WriteFile(ghOutputFilename, pretty, 0644)
+		if err != nil {
+			log.Fatalf("failed to write output: %v", err)
+		}
+		fmt.Printf("GitHub file written to %s\n", ghOutputFilename)
+
+		//2: Scan AWS instances
+		fmt.Println("\n== Scanning AWS ==")
 		cfg, err := config.LoadDefaultConfig(context.TODO())
 		if err != nil {
 			log.Fatal(err)
 		}
 
 		client := ec2.NewFromConfig(cfg)
-
 		output, err := client.DescribeInstances(context.TODO(), &ec2.DescribeInstancesInput{})
 		if err != nil {
 			log.Fatal(err)
 		}
 
 		var instances []InstanceInfo
-
 		for _, reservation := range output.Reservations {
 			for _, instance := range reservation.Instances {
+				nameTag := ""
+				for _, tag := range instance.Tags {
+					if aws.ToString(tag.Key) == "Name" {
+						nameTag = aws.ToString(tag.Value)
+						break
+					}
+				}
 				instances = append(instances, InstanceInfo{
 					InstanceID: aws.ToString(instance.InstanceId),
+					Name:       nameTag,
 					Ami:        aws.ToString(instance.ImageId),
 					Type:       string(instance.InstanceType),
 					AZ:         aws.ToString(instance.Placement.AvailabilityZone),
@@ -46,30 +111,79 @@ var scanfullCmd = &cobra.Command{
 			}
 		}
 
-		// Pretty print JSON
-		pretty, err := json.MarshalIndent(instances, "", "  ")
+		prettyJSON, err := json.MarshalIndent(instances, "", "  ")
 		if err != nil {
 			log.Fatal(err)
 		}
 
-		// Print to console
-		fmt.Println(string(pretty))
+		fmt.Println("\n== Instances ==")
+		fmt.Println("----------------")
+		for _, instance := range instances {
+			fmt.Printf("- id=%s name=%s ami=%s type=%s az=%s\n", instance.InstanceID, instance.Name, instance.Ami, instance.Type, instance.AZ)
+		}
 
-		// Auto-generate output filename
-		filename := fmt.Sprintf("scan-output-%d.json", time.Now().Unix())
-
-		// Write file
-		err = os.WriteFile(filename, pretty, 0644)
+		scanFilename := fmt.Sprintf("scan-output-%d.json", time.Now().Unix())
+		err = os.WriteFile(scanFilename, prettyJSON, 0644)
 		if err != nil {
 			log.Fatal(err)
 		}
+		fmt.Printf("Scan output written to %s\n", scanFilename)
 
-		fmt.Printf("Output written to %s\n", filename)
+		// Step 3: Parse and compare
+		result, err := mapper.FindInstances(scanFilename)
+		if err != nil {
+			log.Fatal(err)
+		}
+		fmt.Println("\n== Mapper ==")
+		fmt.Println("----------------")
+		for _, inst := range result {
+			fmt.Printf("- id=%s name=%s ami=%s type=%s az=%s\n", inst.Instance, inst.Name, inst.AMI, inst.Type, inst.AvailabilityZone)
+		}
 
-		//	return ghCmd()
+		terraform, err := mapper.ParseTerraform(ghOutputFilename)
+		if err != nil {
+			log.Fatal(err)
+		}
+		fmt.Println("\n== Terraform Resources ==")
+		fmt.Println("-------------------------")
+		for _, resource := range terraform {
+			fmt.Printf("- %s.%s", resource.Type, resource.Name)
+			for key, value := range resource.Attributes {
+				fmt.Printf(" %s=%s", key, value)
+			}
+			fmt.Println()
+		}
+
+		missingInstances := findMissingInstances(terraform, result)
+		if len(missingInstances) == 0 {
+			fmt.Println("\nNo missing EC2 instances found.")
+
+			// Clean up temporary files
+			os.Remove(ghOutputFilename)
+			os.Remove(scanFilename)
+			return
+		}
+
+		outPath := fmt.Sprintf("missing-from-tf-%d.tf", time.Now().Unix())
+		if err := writeMissingInstances(outPath, missingInstances); err != nil {
+			log.Fatal(err)
+		}
+		fmt.Printf("\nMissing instances written to %s\n", outPath)
+
+		// Clean up temporary files
+		ghOutputFiles, _ := filepath.Glob("gh-output-*.tf")
+		for _, f := range ghOutputFiles {
+			os.Remove(f)
+		}
+		scanOutputFiles, _ := filepath.Glob("scan-output-*.json")
+		for _, f := range scanOutputFiles {
+			os.Remove(f)
+		}
 	},
 }
 
 func init() {
-	rootCmd.AddCommand(scanCmd)
+	scanfullCmd.Flags().StringVarP(&ghRepo, "repo", "r", "", "GitHub repository (owner/repo)")
+	scanfullCmd.Flags().StringVarP(&ghFilePath, "file", "f", "", "Path to file inside the repo")
+	rootCmd.AddCommand(scanfullCmd)
 }
