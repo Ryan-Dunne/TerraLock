@@ -21,7 +21,7 @@ resource "aws_vpc" "main" {
   }
 }
 
-resource "aws_internet_gateway" "igw" {
+resource "aws_internet_gateway" "OtherIgw" {
   vpc_id = aws_vpc.main.id
 }
 
@@ -30,7 +30,7 @@ resource "aws_instance" "Other_app_server" {
   instance_type = "t3.micro"
 
   subnet_id              = aws_subnet.OtherPublic.id
-  vpc_security_group_ids = [aws_security_group.app_sg.id]
+  vpc_security_group_ids = [aws_security_group.Other_app_sg.id]
 
   tags = {
     Name = "Other-app-server"
