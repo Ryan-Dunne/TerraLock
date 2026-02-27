@@ -1,7 +1,3 @@
-provider "aws" {
-  region = "eu-west-1"
-}
-
 data "aws_ami" "OtherUbuntu" {
   most_recent = true
 
@@ -13,7 +9,7 @@ data "aws_ami" "OtherUbuntu" {
   owners = ["099720109477"] # Canonical
 }
 
-resource "aws_vpc" "main" {
+resource "aws_vpc" "OtherMain" {
   cidr_block = "10.0.0.0/16"
 
   tags = {
@@ -22,7 +18,7 @@ resource "aws_vpc" "main" {
 }
 
 resource "aws_internet_gateway" "OtherIgw" {
-  vpc_id = aws_vpc.main.id
+  vpc_id = aws_vpc.OtherMain.id
 }
 
 resource "aws_instance" "Other_app_server" {
@@ -38,7 +34,7 @@ resource "aws_instance" "Other_app_server" {
 }
 
 resource "aws_subnet" "OtherPublic" {
-  vpc_id                  = aws_vpc.main.id
+  vpc_id                  = aws_vpc.OtherMain.id
   cidr_block              = "10.0.1.0/24"
   map_public_ip_on_launch = true
 
@@ -50,11 +46,11 @@ resource "aws_subnet" "OtherPublic" {
 }
 
 resource "aws_route_table" "OtherPublic" {
-  vpc_id = aws_vpc.main.id
+  vpc_id = aws_vpc.OtherMain.id
 
   route {
     cidr_block = "0.0.0.0/0"
-    gateway_id = aws_internet_gateway.igw.id
+    gateway_id = aws_internet_gateway.OtherIgw.id
   }
 }
 
@@ -66,7 +62,7 @@ resource "aws_route_table_association" "OtherPublic_assoc" {
 resource "aws_security_group" "Other_app_sg" {
   name        = "app-sg"
   description = "Allow SSH"
-  vpc_id      = aws_vpc.main.id
+  vpc_id      = aws_vpc.OtherMain.id
 
   ingress {
     from_port   = 22
@@ -83,7 +79,7 @@ resource "aws_security_group" "Other_app_sg" {
   }
 
   tags = {
-    Name = "app-sg"
+    Name = "Other-app-sg"
   }
 }
 
