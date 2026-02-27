@@ -10,6 +10,8 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"sort"
+	"strings"
 	"time"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
@@ -21,6 +23,7 @@ import (
 var (
 	ghRepo     string
 	ghFilePath string
+	ghDir      string
 )
 
 var scanfullCmd = &cobra.Command{
@@ -31,48 +34,59 @@ var scanfullCmd = &cobra.Command{
 		fmt.Println("scanfull called")
 
 		//1: Get Terraform file
-		if ghRepo == "" || ghFilePath == "" {
-			log.Fatal("You must specify --repo <owner/repo> and --file <path/to/file>")
+		if ghRepo == "" {
+			log.Fatal("You must specify --repo <owner/repo>")
 		}
 
-		fmt.Printf("\n== Fetching from GitHub: %s/%s ==\n", ghRepo, ghFilePath)
-		apiCmd := exec.Command("gh", "api",
-			fmt.Sprintf("repos/%s/contents/%s", ghRepo, ghFilePath),
-		)
-
-		ghOutput, err := apiCmd.Output()
-		if err != nil {
-			log.Fatalf("gh api failed: %v", err)
+		if ghFilePath == "" && ghDir == "" {
+			log.Fatal("You must specify either --file <path/to/file> or --tf-dir <path/to/terraform/dir>")
 		}
 
-		var resp struct {
-			Content  string `json:"content"`
-			Encoding string `json:"encoding"`
+		filePaths := make([]string, 0)
+		if ghFilePath != "" {
+			filePaths = append(filePaths, ghFilePath)
 		}
-
-		if err := json.Unmarshal(ghOutput, &resp); err != nil {
-			log.Fatalf("failed to parse JSON: %v", err)
-		}
-
-		decoded, err := base64.StdEncoding.DecodeString(resp.Content)
-		if err != nil {
-			log.Fatalf("failed to decode file content: %v", err)
-		}
-
-		var pretty []byte
-		var jsonObj interface{}
-
-		if json.Unmarshal(decoded, &jsonObj) == nil {
-			pretty, err = json.MarshalIndent(jsonObj, "", "  ")
+		if ghDir != "" {
+			dirFiles, err := listTerraformFilesInDir(ghRepo, ghDir)
 			if err != nil {
-				log.Fatalf("failed to pretty print JSON: %v", err)
+				log.Fatal(err)
 			}
-		} else {
-			pretty = decoded
+			filePaths = append(filePaths, dirFiles...)
+		}
+
+		if len(filePaths) == 0 {
+			log.Fatal("No Terraform files found")
+		}
+
+		seen := map[string]struct{}{}
+		uniquePaths := make([]string, 0, len(filePaths))
+		for _, p := range filePaths {
+			if _, exists := seen[p]; exists {
+				continue
+			}
+			seen[p] = struct{}{}
+			uniquePaths = append(uniquePaths, p)
+		}
+		sort.Strings(uniquePaths)
+
+		fmt.Printf("\n== Fetching %d Terraform file(s) from GitHub repo %s ==\n", len(uniquePaths), ghRepo)
+		var combinedTerraform strings.Builder
+		for _, path := range uniquePaths {
+			fmt.Printf("- %s\n", path)
+			decoded, err := fetchGitHubDirectory(ghRepo, path)
+			if err != nil {
+				log.Fatalf("failed to fetch %s: %v", path, err)
+			}
+			combinedTerraform.WriteString("\n")
+			combinedTerraform.WriteString("# source: ")
+			combinedTerraform.WriteString(path)
+			combinedTerraform.WriteString("\n")
+			combinedTerraform.Write(decoded)
+			combinedTerraform.WriteString("\n")
 		}
 
 		ghOutputFilename := fmt.Sprintf("gh-output-%d.tf", time.Now().Unix())
-		err = os.WriteFile(ghOutputFilename, pretty, 0644)
+		err := os.WriteFile(ghOutputFilename, []byte(combinedTerraform.String()), 0644)
 		if err != nil {
 			log.Fatalf("failed to write output: %v", err)
 		}
@@ -185,5 +199,65 @@ var scanfullCmd = &cobra.Command{
 func init() {
 	scanfullCmd.Flags().StringVarP(&ghRepo, "repo", "r", "", "GitHub repository (owner/repo)")
 	scanfullCmd.Flags().StringVarP(&ghFilePath, "file", "f", "", "Path to file inside the repo")
+	scanfullCmd.Flags().StringVar(&ghDir, "dir", "", "Path to Terraform directory in Github")
 	rootCmd.AddCommand(scanfullCmd)
+}
+
+func fetchGitHubDirectory(repo, path string) ([]byte, error) {
+	apiCmd := exec.Command("gh", "api", fmt.Sprintf("repos/%s/contents/%s", repo, path))
+	ghOutput, err := apiCmd.Output()
+	if err != nil {
+		return nil, fmt.Errorf("gh api failed for %s: %w", path, err)
+	}
+
+	var resp struct {
+		Content  string `json:"content"`
+		Encoding string `json:"encoding"`
+	}
+
+	if err := json.Unmarshal(ghOutput, &resp); err != nil {
+		return nil, fmt.Errorf("failed to parse JSON for %s: %w", path, err)
+	}
+
+	if resp.Encoding != "base64" {
+		return nil, fmt.Errorf("unsupported encoding %q for %s", resp.Encoding, path)
+	}
+
+	decoded, err := base64.StdEncoding.DecodeString(resp.Content)
+	if err != nil {
+		return nil, fmt.Errorf("failed to decode file content for %s: %w", path, err)
+	}
+
+	return decoded, nil
+}
+
+func listTerraformFilesInDir(repo, dir string) ([]string, error) {
+	apiCmd := exec.Command("gh", "api", fmt.Sprintf("repos/%s/contents/%s", repo, dir))
+	output, err := apiCmd.Output()
+	if err != nil {
+		return nil, fmt.Errorf("gh api failed for directory %s: %w", dir, err)
+	}
+
+	var entries []struct {
+		Type string `json:"type"`
+		Path string `json:"path"`
+		Name string `json:"name"`
+	}
+
+	if err := json.Unmarshal(output, &entries); err != nil {
+		return nil, fmt.Errorf("failed to parse directory response for %s: %w", dir, err)
+	}
+
+	files := make([]string, 0)
+	for _, entry := range entries {
+		if entry.Type == "file" && strings.HasSuffix(entry.Name, ".tf") {
+			files = append(files, entry.Path)
+		}
+	}
+
+	if len(files) == 0 {
+		return nil, fmt.Errorf("no .tf files found in directory %s", dir)
+	}
+
+	return files, nil
 }
