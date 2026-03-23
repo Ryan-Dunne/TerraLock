@@ -1,1 +1,3 @@
-Terraform\.terraform\providers
+# Ignores Provider files & Licenses
+**/.terraform/providers/**
+**/.terraform/**/LICENSE.txt
