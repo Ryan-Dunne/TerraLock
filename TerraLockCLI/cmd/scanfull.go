@@ -115,12 +115,20 @@ var scanfullCmd = &cobra.Command{
 						break
 					}
 				}
+
+				iamProfile := ""
+				if instance.IamInstanceProfile != nil {
+					iamProfile = aws.ToString(instance.IamInstanceProfile.Arn)
+				}
+
 				instances = append(instances, InstanceInfo{
 					InstanceID: aws.ToString(instance.InstanceId),
 					Name:       nameTag,
 					Ami:        aws.ToString(instance.ImageId),
 					Type:       string(instance.InstanceType),
 					AZ:         aws.ToString(instance.Placement.AvailabilityZone),
+					SubnetID:   aws.ToString(instance.SubnetId),
+					IAMProfile: iamProfile,
 				})
 			}
 		}
@@ -133,7 +141,7 @@ var scanfullCmd = &cobra.Command{
 		fmt.Println("\n== Instances ==")
 		fmt.Println("----------------")
 		for _, instance := range instances {
-			fmt.Printf("- id=%s name=%s ami=%s type=%s az=%s\n", instance.InstanceID, instance.Name, instance.Ami, instance.Type, instance.AZ)
+			fmt.Printf("- id=%s name=%s ami=%s type=%s az=%s subnet=%s iam=%s\n", instance.InstanceID, instance.Name, instance.Ami, instance.Type, instance.AZ, instance.SubnetID, instance.IAMProfile)
 		}
 
 		scanFilename := fmt.Sprintf("scan-output-%d.json", time.Now().Unix())
@@ -151,7 +159,7 @@ var scanfullCmd = &cobra.Command{
 		fmt.Println("\n== Mapper ==")
 		fmt.Println("----------------")
 		for _, inst := range result {
-			fmt.Printf("- id=%s name=%s ami=%s type=%s az=%s\n", inst.Instance, inst.Name, inst.AMI, inst.Type, inst.AvailabilityZone)
+			fmt.Printf("- id=%s name=%s ami=%s type=%s az=%s subnet=%s iam=%s\n", inst.Instance, inst.Name, inst.AMI, inst.Type, inst.AvailabilityZone, inst.SubnetID, inst.IAMProfile)
 		}
 
 		terraform, err := mapper.ParseTerraform(ghOutputFilename)

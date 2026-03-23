@@ -23,6 +23,8 @@ type InstanceInfo struct {
 	Ami        string `json:"ami"`
 	Type       string `json:"type"`
 	AZ         string `json:"availability_zone"`
+	SubnetID   string `json:"subnet_id,omitempty"`
+	IAMProfile string `json:"iam_instance_profile,omitempty"`
 }
 
 var scanCmd = &cobra.Command{
@@ -55,12 +57,20 @@ var scanCmd = &cobra.Command{
 						break
 					}
 				}
+
+				iamProfile := ""
+				if instance.IamInstanceProfile != nil {
+					iamProfile = aws.ToString(instance.IamInstanceProfile.Arn)
+				}
+
 				instances = append(instances, InstanceInfo{
 					InstanceID: aws.ToString(instance.InstanceId),
 					Name:       nameTag,
 					Ami:        aws.ToString(instance.ImageId),
 					Type:       string(instance.InstanceType),
 					AZ:         aws.ToString(instance.Placement.AvailabilityZone),
+					SubnetID:   aws.ToString(instance.SubnetId),
+					IAMProfile: iamProfile,
 				})
 			}
 		}
@@ -74,7 +84,7 @@ var scanCmd = &cobra.Command{
 		fmt.Println("\n== Instances ==")
 		fmt.Println("----------------")
 		for _, instance := range instances {
-			fmt.Printf("- id=%s name=%s ami=%s type=%s az=%s\n", instance.InstanceID, instance.Name, instance.Ami, instance.Type, instance.AZ)
+			fmt.Printf("- id=%s name=%s ami=%s type=%s az=%s subnet=%s iam=%s\n", instance.InstanceID, instance.Name, instance.Ami, instance.Type, instance.AZ, instance.SubnetID, instance.IAMProfile)
 		}
 
 		// Auto-generate output filename
@@ -95,7 +105,7 @@ var scanCmd = &cobra.Command{
 		fmt.Println("\n== Mapper ==")
 		fmt.Println("----------------")
 		for _, inst := range result {
-			fmt.Printf("- id=%s name=%s ami=%s type=%s az=%s\n", inst.Instance, inst.Name, inst.AMI, inst.Type, inst.AvailabilityZone)
+			fmt.Printf("- id=%s name=%s ami=%s type=%s az=%s subnet=%s iam=%s\n", inst.Instance, inst.Name, inst.AMI, inst.Type, inst.AvailabilityZone, inst.SubnetID, inst.IAMProfile)
 		}
 
 		// Find the most recent gh-output file
@@ -221,6 +231,12 @@ func writeMissingInstances(path string, instances []mapper.AwsInstance) error {
 		builder.WriteString(fmt.Sprintf("  ami = \"%s\"\n", inst.AMI))
 		builder.WriteString(fmt.Sprintf("  instance_type = \"%s\"\n", inst.Type))
 		builder.WriteString(fmt.Sprintf("  availability_zone = \"%s\"\n", inst.AvailabilityZone))
+		if inst.SubnetID != "" {
+			builder.WriteString(fmt.Sprintf("  subnet_id = \"%s\"\n", inst.SubnetID))
+		}
+		if inst.IAMProfile != "" {
+			builder.WriteString(fmt.Sprintf("  iam_instance_profile = \"%s\"\n", inst.IAMProfile))
+		}
 		if inst.Name != "" {
 			builder.WriteString("  tags = {\n")
 			builder.WriteString(fmt.Sprintf("    Name = \"%s\"\n", inst.Name))

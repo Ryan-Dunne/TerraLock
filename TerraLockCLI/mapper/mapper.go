@@ -16,6 +16,8 @@ type AwsInstance struct {
 	AMI              string `json:"ami"`
 	Type             string `json:"type"`
 	AvailabilityZone string `json:"availability_zone"`
+	SubnetID         string `json:"subnet_id,omitempty"`
+	IAMProfile       string `json:"iam_instance_profile,omitempty"`
 }
 
 func FindInstances(path string) ([]AwsInstance, error) {
