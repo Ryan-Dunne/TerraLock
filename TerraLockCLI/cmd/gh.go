@@ -22,7 +22,7 @@ var ghCmd = &cobra.Command{
 without cloning the repository.`,
 	Run: func(cmd *cobra.Command, args []string) {
 		if len(args) < 1 {
-			log.Fatal("Usage: TerraLockCLI gh <owner/repo> --file <path>")
+			log.Fatal("Usage: terralock gh <owner/repo> --file <path>")
 		}
 
 		if filePath == "" {
