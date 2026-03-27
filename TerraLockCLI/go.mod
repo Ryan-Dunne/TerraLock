@@ -1,4 +1,4 @@
-module TerraLock/TerraLockCLI
+module TerraLock/terralock
 
 go 1.25.1
 

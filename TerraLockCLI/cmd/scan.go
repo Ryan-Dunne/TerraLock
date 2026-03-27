@@ -1,13 +1,12 @@
 package cmd
 
 import (
-	"TerraLock/TerraLockCLI/mapper"
+	"TerraLock/terralock/mapper"
 	"context"
 	"encoding/json"
 	"fmt"
 	"log"
 	"os"
-	"path/filepath"
 	"strings"
 	"time"
 
@@ -108,30 +107,10 @@ var scanCmd = &cobra.Command{
 			fmt.Printf("- id=%s name=%s ami=%s type=%s az=%s subnet=%s iam=%s\n", inst.Instance, inst.Name, inst.AMI, inst.Type, inst.AvailabilityZone, inst.SubnetID, inst.IAMProfile)
 		}
 
-		// Find the most recent gh-output file
-		ghOutputFiles, err := filepath.Glob("gh-output-*.tf")
-		if err != nil || len(ghOutputFiles) == 0 {
-			log.Fatal("No gh-output file found.")
-		}
-		ghOutputPath := ghOutputFiles[len(ghOutputFiles)-1]
-
-		terraform, err := mapper.ParseTerraform(ghOutputPath)
-		if err != nil {
-			log.Fatal(err)
-		}
-		fmt.Println("\n== Terraform Resources ==")
-		fmt.Println("-------------------------")
-		for _, resource := range terraform {
-			fmt.Printf("- %s.%s", resource.Type, resource.Name)
-			for key, value := range resource.Attributes {
-				fmt.Printf(" %s=%s", key, value)
-			}
-			fmt.Println()
-		}
-
-		missingInstances := findMissingInstances(terraform, result)
+		missingInstances := findMissingInstances([]mapper.TerraformResource{}, result)
 		if len(missingInstances) == 0 {
 			fmt.Println("\nNo missing EC2 instances found.")
+			os.Remove(filename)
 			return
 		}
 
@@ -141,14 +120,8 @@ var scanCmd = &cobra.Command{
 		}
 		fmt.Printf("\nMissing instances written to %s\n", outPath)
 
-		// Clean up temporary files
-		for _, f := range ghOutputFiles {
-			os.Remove(f)
-		}
-		scanOutputFiles, _ := filepath.Glob("scan-output-*.json")
-		for _, f := range scanOutputFiles {
-			os.Remove(f)
-		}
+		// Clean up temporary scan output from this run.
+		os.Remove(filename)
 
 	},
 }

@@ -1,7 +1,7 @@
 package cmd
 
 import (
-	"TerraLock/TerraLockCLI/mapper"
+	"TerraLock/terralock/mapper"
 	"context"
 	"encoding/base64"
 	"encoding/json"
