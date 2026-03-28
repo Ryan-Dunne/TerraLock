@@ -39,7 +39,7 @@ var scanfullCmd = &cobra.Command{
 		}
 
 		if ghFilePath == "" && ghDir == "" {
-			log.Fatal("You must specify either --file <path/to/file> or --tf-dir <path/to/terraform/dir>")
+			log.Fatal("You must specify either --file <path/to/file> or --dir <path/to/terraform/dir>")
 		}
 
 		filePaths := make([]string, 0)
