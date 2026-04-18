@@ -3,234 +3,242 @@ package cmd
 import (
 	"TerraLock/terralock/mapper"
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"log"
 	"os"
+	"os/exec"
+	"sort"
 	"strings"
 	"time"
 
-	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/config"
-	"github.com/aws/aws-sdk-go-v2/service/ec2"
 	"github.com/spf13/cobra"
 )
 
-type InstanceInfo struct {
-	InstanceID string `json:"instance_id"`
-	Name       string `json:"name"`
-	Ami        string `json:"ami"`
-	Type       string `json:"type"`
-	AZ         string `json:"availability_zone"`
-	SubnetID   string `json:"subnet_id,omitempty"`
-	IAMProfile string `json:"iam_instance_profile,omitempty"`
-}
+var (
+	ghRepo     string
+	ghFilePath string //Flag variables
+	ghDir      string
+)
 
 var scanCmd = &cobra.Command{
 	Use:   "scan",
-	Short: "Scan AWS for drift",
-	Long:  "Scans AWS EC2 instances and outputs a pretty‑printed JSON report.",
+	Short: "Fetch Terraform from GitHub and scan AWS for drift",
+	Long:  "Fetches a Terraform file from GitHub, scans AWS EC2 instances, and generates missing resources.",
 	Run: func(cmd *cobra.Command, args []string) {
 		fmt.Println("scan called")
 
+		//1: Get Terraform file
+		if ghRepo == "" {
+			log.Fatal("You must specify --repo <owner/repo>")
+		}
+
+		if ghFilePath == "" && ghDir == "" {
+			log.Fatal("You must specify either --file <path/to/file> or --tf-dir <path/to/terraform/dir>")
+		}
+
+		filePaths := make([]string, 0) //Collect file paths to fetch, does single file & directorys
+		if ghFilePath != "" {
+			filePaths = append(filePaths, ghFilePath)
+		}
+		if ghDir != "" {
+			dirFiles, err := listTerraformFilesInDir(ghRepo, ghDir)
+			if err != nil {
+				log.Fatal(err)
+			}
+			filePaths = append(filePaths, dirFiles...)
+		}
+
+		if len(filePaths) == 0 {
+			log.Fatal("No Terraform files found")
+		}
+
+		// Remove duplicates and sort file paths for consistent output
+		seen := map[string]struct{}{}
+		uniquePaths := make([]string, 0, len(filePaths))
+		for _, p := range filePaths {
+			if _, exists := seen[p]; exists {
+				continue
+			}
+			seen[p] = struct{}{}
+			uniquePaths = append(uniquePaths, p)
+		}
+		sort.Strings(uniquePaths)
+
+		fmt.Printf("\n== Fetching %d Terraform file(s) from GitHub repo %s ==\n", len(uniquePaths), ghRepo)
+
+		// 2: Fetch each file, combine contents, and parse
+		var combinedTerraform strings.Builder
+		for _, path := range uniquePaths {
+			fmt.Printf("- %s\n", path)
+			decoded, err := fetchGitHubDirectory(ghRepo, path)
+			if err != nil {
+				log.Fatalf("failed to fetch %s: %v", path, err)
+			}
+			combinedTerraform.WriteString("\n")
+			combinedTerraform.WriteString("# source: ")
+			combinedTerraform.WriteString(path)
+			combinedTerraform.WriteString("\n")
+			combinedTerraform.Write(decoded)
+			combinedTerraform.WriteString("\n")
+		}
+
+		ghOutputFilename := fmt.Sprintf("gh-output-%d.tf", time.Now().Unix())
+		err := os.WriteFile(ghOutputFilename, []byte(combinedTerraform.String()), 0644)
+		if err != nil {
+			log.Fatalf("failed to write output: %v", err)
+		}
+		defer os.Remove(ghOutputFilename)
+
+		terraform, err := mapper.ParseTerraform(ghOutputFilename)
+		if err != nil {
+			log.Fatal(err)
+		}
+		fmt.Printf("\n== Parsed %d Terraform resources ==\n", len(terraform))
+
+		// 3: Scan AWS and compare to Terraform
+		fmt.Println("\n== Scanning AWS ==")
 		cfg, err := config.LoadDefaultConfig(context.TODO())
 		if err != nil {
 			log.Fatal(err)
 		}
 
-		client := ec2.NewFromConfig(cfg)
-
-		output, err := client.DescribeInstances(context.TODO(), &ec2.DescribeInstancesInput{})
-		if err != nil {
-			log.Fatal(err)
-		}
-
-		var instances []InstanceInfo
-
-		for _, reservation := range output.Reservations {
-			for _, instance := range reservation.Instances {
-				nameTag := ""
-				for _, tag := range instance.Tags {
-					if aws.ToString(tag.Key) == "Name" {
-						nameTag = aws.ToString(tag.Value)
-						break
-					}
-				}
-
-				iamProfile := ""
-				if instance.IamInstanceProfile != nil {
-					iamProfile = aws.ToString(instance.IamInstanceProfile.Arn)
-				}
-
-				instances = append(instances, InstanceInfo{
-					InstanceID: aws.ToString(instance.InstanceId),
-					Name:       nameTag,
-					Ami:        aws.ToString(instance.ImageId),
-					Type:       string(instance.InstanceType),
-					AZ:         aws.ToString(instance.Placement.AvailabilityZone),
-					SubnetID:   aws.ToString(instance.SubnetId),
-					IAMProfile: iamProfile,
-				})
+		// For each scanner type, fetch live resources, find missing ones, and collect results
+		scanners := defaultScanners()
+		var allResults []scannerResult
+		for _, scanner := range scanners {
+			live, err := scanner.Fetch(context.TODO(), cfg)
+			if err != nil {
+				log.Fatal(err)
 			}
+
+			missing := scanner.FindMissing(terraform, live) //Compares live resources to declared IaC
+			fmt.Printf("  %s: %d live, %d missing\n", scanner.TerraformType(), len(live), len(missing))
+			allResults = append(allResults, scannerResult{scanner, missing})
 		}
 
-		// Pretty print JSON
-		pretty, err := json.MarshalIndent(instances, "", "  ")
-		if err != nil {
-			log.Fatal(err)
+		totalMissing := 0
+		for _, res := range allResults {
+			totalMissing += len(res.missing)
 		}
 
-		fmt.Println("\n== Instances ==")
-		fmt.Println("----------------")
-		for _, instance := range instances {
-			fmt.Printf("- id=%s name=%s ami=%s type=%s az=%s subnet=%s iam=%s\n", instance.InstanceID, instance.Name, instance.Ami, instance.Type, instance.AZ, instance.SubnetID, instance.IAMProfile)
-		}
-
-		// Auto-generate output filename
-		filename := fmt.Sprintf("scan-output-%d.json", time.Now().Unix())
-
-		// Write file
-		err = os.WriteFile(filename, pretty, 0644)
-		if err != nil {
-			log.Fatal(err)
-		}
-
-		fmt.Printf("Output written to %s\n", filename)
-
-		result, err := mapper.FindInstances(filename)
-		if err != nil {
-			log.Fatal(err)
-		}
-		fmt.Println("\n== Mapper ==")
-		fmt.Println("----------------")
-		for _, inst := range result {
-			fmt.Printf("- id=%s name=%s ami=%s type=%s az=%s subnet=%s iam=%s\n", inst.Instance, inst.Name, inst.AMI, inst.Type, inst.AvailabilityZone, inst.SubnetID, inst.IAMProfile)
-		}
-
-		missingInstances := findMissingInstances([]mapper.TerraformResource{}, result)
-		if len(missingInstances) == 0 {
-			fmt.Println("\nNo missing EC2 instances found.")
-			os.Remove(filename)
+		if totalMissing == 0 {
+			fmt.Println("\nNo missing resources found.")
 			return
 		}
 
+		// 4: Write missing resources to new Terraform file
 		outPath := fmt.Sprintf("missing-from-tf-%d.tf", time.Now().Unix())
-		if err := writeMissingInstances(outPath, missingInstances); err != nil {
+		if err := writeMissingResources(outPath, allResults); err != nil {
 			log.Fatal(err)
 		}
-		fmt.Printf("\nMissing instances written to %s\n", outPath)
-
-		// Clean up temporary scan output from this run.
-		os.Remove(filename)
+		fmt.Printf("\nMissing resources written to %s\n", outPath)
 
 	},
 }
 
 func init() {
+	scanCmd.Flags().StringVarP(&ghRepo, "repo", "r", "", "GitHub repository (owner/repo)")
+	scanCmd.Flags().StringVarP(&ghFilePath, "file", "f", "", "Path to file inside the repo")
+	scanCmd.Flags().StringVar(&ghDir, "dir", "", "Path to Terraform directory in Github")
 	rootCmd.AddCommand(scanCmd)
 }
 
-func findMissingInstances(terraform []mapper.TerraformResource, live []mapper.AwsInstance) []mapper.AwsInstance {
-	known := map[string]struct{}{}
-	for _, resource := range terraform {
-		if resource.Type != "aws_instance" {
-			continue
-		}
-		name := extractTagName(resource.Attributes["tags"])
-		if name == "" {
-			continue
-		}
-		known[name] = struct{}{}
+// Helper functions for GitHub API, resource comparison, and output
+func fetchGitHubDirectory(repo, path string) ([]byte, error) {
+	apiCmd := exec.Command("gh", "api", fmt.Sprintf("repos/%s/contents/%s", repo, path))
+	ghOutput, err := apiCmd.Output()
+	if err != nil {
+		return nil, fmt.Errorf("gh api failed for %s: %w", path, err)
 	}
 
-	missingInstances := make([]mapper.AwsInstance, 0)
-	for _, inst := range live {
-		if inst.Name == "" {
-			continue
-		}
-		if _, exists := known[inst.Name]; !exists {
-			missingInstances = append(missingInstances, inst)
-		}
+	var resp struct {
+		Content  string `json:"content"`
+		Encoding string `json:"encoding"`
 	}
 
-	return missingInstances
+	if err := json.Unmarshal(ghOutput, &resp); err != nil {
+		return nil, fmt.Errorf("failed to parse JSON for %s: %w", path, err)
+	}
+
+	if resp.Encoding != "base64" {
+		return nil, fmt.Errorf("unsupported encoding %q for %s", resp.Encoding, path)
+	}
+
+	decoded, err := base64.StdEncoding.DecodeString(resp.Content)
+	if err != nil {
+		return nil, fmt.Errorf("failed to decode file content for %s: %w", path, err)
+	}
+
+	return decoded, nil
 }
 
-func extractTagName(tagsExpr string) string {
-	if tagsExpr == "" {
-		return ""
+// Lists .tf files in a GitHub directory using the API
+func listTerraformFilesInDir(repo, dir string) ([]string, error) {
+	apiCmd := exec.Command("gh", "api", fmt.Sprintf("repos/%s/contents/%s", repo, dir))
+	output, err := apiCmd.Output()
+	if err != nil {
+		return nil, fmt.Errorf("gh api failed for directory %s: %w", dir, err)
 	}
-	compact := strings.ReplaceAll(tagsExpr, "\n", " ")
-	idx := strings.Index(compact, "Name")
-	if idx == -1 {
-		return ""
+
+	var entries []struct {
+		Type string `json:"type"`
+		Path string `json:"path"`
+		Name string `json:"name"`
 	}
-	segment := compact[idx:]
-	eq := strings.Index(segment, "=")
-	if eq == -1 {
-		return ""
+
+	if err := json.Unmarshal(output, &entries); err != nil {
+		return nil, fmt.Errorf("failed to parse directory response for %s: %w", dir, err)
 	}
-	segment = segment[eq+1:]
-	firstQuote := strings.Index(segment, "\"")
-	if firstQuote == -1 {
-		return ""
+
+	files := make([]string, 0)
+	for _, entry := range entries {
+		if entry.Type == "file" && strings.HasSuffix(entry.Name, ".tf") {
+			files = append(files, entry.Path)
+		}
 	}
-	segment = segment[firstQuote+1:]
-	secondQuote := strings.Index(segment, "\"")
-	if secondQuote == -1 {
-		return ""
+
+	if len(files) == 0 {
+		return nil, fmt.Errorf("no .tf files found in directory %s", dir)
 	}
-	return segment[:secondQuote]
+
+	return files, nil
 }
 
-func writeMissingInstances(path string, instances []mapper.AwsInstance) error {
+type scannerResult struct {
+	scanner mapper.ResourceScanner
+	missing []mapper.LiveResource
+}
+
+// Each Resource will have a corresponding scanner that knows how to fetch relative resource
+func defaultScanners() []mapper.ResourceScanner {
+	return []mapper.ResourceScanner{
+		&mapper.EC2InstanceScanner{},
+		// More scanners to go here
+	}
+}
+
+// Writes missing resources to a new Terraform file, ensuring unique labels if needed
+func writeMissingResources(path string, results []scannerResult) error {
 	var builder strings.Builder
-	builder.WriteString("// Generated from live AWS instances\n")
+	builder.WriteString("// Generated by TerraLock\n")
 
 	used := map[string]int{}
-	for _, inst := range instances {
-		label := sanitizeResourceName(inst.Name)
-		if label == "" {
-			label = sanitizeResourceName(inst.Instance)
+	for _, r := range results {
+		for _, resource := range r.missing {
+			label := mapper.SanitizeResourceName(resource.Name)
+			if label == "" {
+				label = mapper.SanitizeResourceName(resource.ID)
+			}
+			used[label]++
+			if used[label] > 1 {
+				label = fmt.Sprintf("%s_%d", label, used[label])
+			}
+			builder.WriteString(r.scanner.ToHCL(resource, label))
 		}
-		used[label]++
-		if used[label] > 1 {
-			label = fmt.Sprintf("%s_%d", label, used[label])
-		}
-
-		builder.WriteString("\nresource \"aws_instance\" \"")
-		builder.WriteString(label)
-		builder.WriteString("\" {\n")
-		builder.WriteString(fmt.Sprintf("  ami = \"%s\"\n", inst.AMI))
-		builder.WriteString(fmt.Sprintf("  instance_type = \"%s\"\n", inst.Type))
-		builder.WriteString(fmt.Sprintf("  availability_zone = \"%s\"\n", inst.AvailabilityZone))
-		if inst.SubnetID != "" {
-			builder.WriteString(fmt.Sprintf("  subnet_id = \"%s\"\n", inst.SubnetID))
-		}
-		if inst.IAMProfile != "" {
-			builder.WriteString(fmt.Sprintf("  iam_instance_profile = \"%s\"\n", inst.IAMProfile))
-		}
-		if inst.Name != "" {
-			builder.WriteString("  tags = {\n")
-			builder.WriteString(fmt.Sprintf("    Name = \"%s\"\n", inst.Name))
-			builder.WriteString("  }\n")
-		}
-		builder.WriteString("}\n")
 	}
 
 	return os.WriteFile(path, []byte(builder.String()), 0644)
-}
-
-func sanitizeResourceName(name string) string {
-	var builder strings.Builder
-	for _, r := range name {
-		if (r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') || (r >= '0' && r <= '9') || r == '_' {
-			builder.WriteRune(r)
-			continue
-		}
-		if r == '-' || r == ' ' {
-			builder.WriteRune('_')
-		}
-	}
-	return strings.ToLower(builder.String())
 }
