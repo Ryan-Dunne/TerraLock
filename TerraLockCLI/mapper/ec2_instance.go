@@ -15,15 +15,16 @@ func (s *EC2InstanceScanner) TerraformType() string { return "aws_instance" }
 
 func (s *EC2InstanceScanner) Fetch(ctx context.Context, cfg aws.Config) ([]LiveResource, error) {
 	client := ec2.NewFromConfig(cfg)
-	output, err := client.DescribeInstances(ctx, &ec2.DescribeInstancesInput{})
-	if err != nil {
-		return nil, fmt.Errorf("DescribeInstances failed: %w", err)
-	}
 
-	// Loops through all instances in DescribeInstances output, extracts attributes, and constructs LiveResource objects for each
 	var resources []LiveResource
-	for _, reservation := range output.Reservations {
-		for _, instance := range reservation.Instances {
+	paginator := ec2.NewDescribeInstancesPaginator(client, &ec2.DescribeInstancesInput{})
+	for paginator.HasMorePages() {
+		output, err := paginator.NextPage(ctx)
+		if err != nil {
+			return nil, fmt.Errorf("DescribeInstances failed: %w", err)
+		}
+		for _, reservation := range output.Reservations {
+			for _, instance := range reservation.Instances {
 			name := ""
 			for _, tag := range instance.Tags {
 				if aws.ToString(tag.Key) == "Name" {
@@ -49,6 +50,7 @@ func (s *EC2InstanceScanner) Fetch(ctx context.Context, cfg aws.Config) ([]LiveR
 				Name:  name,
 				Attrs: attrs,
 			})
+			}
 		}
 	}
 	return resources, nil
