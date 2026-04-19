@@ -90,6 +90,7 @@ var scanCmd = &cobra.Command{
 		if err != nil {
 			log.Fatalf("failed to write output: %v", err)
 		}
+
 		defer os.Remove(ghOutputFilename)
 
 		terraform, err := mapper.ParseTerraform(ghOutputFilename)
@@ -216,6 +217,7 @@ type scannerResult struct {
 func defaultScanners() []mapper.ResourceScanner {
 	return []mapper.ResourceScanner{
 		&mapper.EC2InstanceScanner{},
+		&mapper.SecurityGroupScanner{},
 		// More scanners to go here
 	}
 }
