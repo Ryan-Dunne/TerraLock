@@ -26,24 +26,24 @@ $env:AWS_SECRET_ACCESS_KEY = "YOUR_KEY_HERE"
 $env:AWS_REGION = "YOUR_REGION_HERE"
 ```
 
-4. Verify the install:
+4. Ensure you are logged into your GitHub CLI
+```powershell
+gh auth login
+gh auth status
+```
+
+
+5. Verify the install:
 
 ```powershell
 .\terralock.exe help
 .\terralock.exe help scan
 ```
 
-5. Run your first scan:
+6. Run your first scan:
 
 ```powershell
 .\terralock.exe scan
-```
-
-Optional: if you use GitHub-based commands, authenticate GitHub CLI:
-
-```powershell
-gh auth login
-gh auth status
 ```
 
 ## Setup On A New Machine (Linux Bash)
@@ -61,7 +61,7 @@ export AWS_REGION="YOUR_REGION_HERE"
 ./terralock scan
 ```
 
-Optional GitHub authentication:
+Ensure you are logged into GitHub CLI
 
 ```bash
 gh auth login
@@ -78,10 +78,11 @@ https://go.dev/doc/install
 AWS CLI 2.31.x or later  
 https://docs.aws.amazon.com/cli/latest/userguide/getting-started-install.html
 
-### Optional installation
-
 Terraform 1.14.x or later  
 https://developer.hashicorp.com/terraform/install
+
+GitHub CLI
+https://cli.github.com/
 
 ## Authentication
 
@@ -102,9 +103,7 @@ For commands that use GitHub data, authenticate with GitHub CLI.
 | Command | Purpose | Requires GitHub CLI | Primary output |
 | --- | --- | --- | --- |
 | terralock | Show help and top-level command usage | No | Console help text |
-| terralock gh <owner/repo> --file <path> | Fetch Terraform from GitHub | Yes | gh-output-<timestamp>.tf |
-| terralock scan | Scan live AWS instances and generate Terraform from missing resources against an empty baseline | No | missing-from-tf-<timestamp>.tf |
-| terralock scanfull --repo <owner/repo> [--file <path>] [--dir <path>] | Compare live AWS instances against Terraform fetched from GitHub | Yes | missing-from-tf-<timestamp>.tf |
+| terralock scan --repo <owner/repo> [--file <path>] [--dir <path>] | Compare live AWS instances against Terraform fetched from GitHub | Yes | missing-from-tf-<timestamp>.tf |
 | terralock help [command] | Show help for a command | No | Console help text |
 
 ## Command Workflows
@@ -115,23 +114,7 @@ For commands that use GitHub data, authenticate with GitHub CLI.
 2. Lists available subcommands and global help text.
 3. Exits without creating files.
 
-### terralock gh <owner/repo> --file <path>
-
-1. Validates the repository and file path arguments.
-2. Calls GitHub CLI to fetch file content from the repository.
-3. Decodes the GitHub API response.
-4. Writes the Terraform file to gh-output-<timestamp>.tf.
-
-### terralock scan
-
-1. Loads AWS credentials from the current environment.
-2. Calls AWS EC2 DescribeInstances to get live instances.
-3. Maps the scan result into the internal instance structure.
-4. Compares the scan result against an empty Terraform baseline.
-5. Writes missing resources to missing-from-tf-<timestamp>.tf.
-6. Removes temporary scan output if cleanup is reached.
-
-### terralock scanfull --repo <owner/repo> [--file <path>] [--dir <path>]
+### terralock scan --repo <owner/repo> [--file <path>] [--dir <path>]
 
 1. Validates GitHub arguments and resolves one or more Terraform files.
 2. Fetches Terraform file content from GitHub and combines it.
@@ -168,24 +151,9 @@ terralock
 Flags:
 - -h, --help
 
-### gh
-
-terralock gh <owner/repo> --file <path>
-
-Flags:
-- -f, --file <path>
-- -h, --help
-
 ### scan
 
-terralock scan
-
-Flags:
-- -h, --help
-
-### scanfull
-
-terralock scanfull --repo <owner/repo> [--file <path>] [--dir <path>]
+terralock scan --repo <owner/repo> [--file <path>] [--dir <path>]
 
 Flags:
 - -r, --repo <owner/repo> (required)
@@ -199,11 +167,7 @@ terralock help [command]
 
 ## Examples
 
-terralock gh github-username/your-repo --file Terraform/main.tf
+terralock scan --repo github-username/your-repo --file Terraform/main.tf
 
-terralock scan
-
-terralock scanfull --repo github-username/your-repo --file Terraform/main.tf
-
-terralock scanfull --repo github-username/your-repo --dir Terraform
+terralock scan --repo github-username/your-repo --dir Terraform
 
