@@ -220,6 +220,7 @@ func defaultScanners() []mapper.ResourceScanner {
 		&mapper.SecurityGroupScanner{},
 		&mapper.IAMRoleScanner{},
 		&mapper.S3BucketScanner{},
+		&mapper.VPCScanner{},
 		// More scanners to go here
 	}
 }
