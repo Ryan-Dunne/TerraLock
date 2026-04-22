@@ -21,7 +21,18 @@ var (
 	ghRepo     string
 	ghFilePath string //Flag variables
 	ghDir      string
+	scanOnly   []string
+	scanSkip   []string
 )
+
+// Used to allow users to use short hand names for scanners in command flags
+var scannerAliases = map[string]string{
+	"ec2": "aws_instance",
+	"s3":  "aws_s3_bucket",
+	"sg":  "aws_security_group",
+	"iam": "aws_iam_role",
+	"vpc": "aws_vpc",
+}
 
 var scanCmd = &cobra.Command{
 	Use:   "scan",
@@ -107,7 +118,10 @@ var scanCmd = &cobra.Command{
 		}
 
 		// For each scanner type, fetch live resources, find missing ones, and collect results
-		scanners := defaultScanners()
+		scanners, err := filterScanners(defaultScanners(), scanOnly, scanSkip)
+		if err != nil {
+			log.Fatal(err)
+		}
 		var allResults []scannerResult
 		for _, scanner := range scanners {
 			live, err := scanner.Fetch(context.TODO(), cfg)
@@ -143,8 +157,59 @@ var scanCmd = &cobra.Command{
 func init() {
 	scanCmd.Flags().StringVarP(&ghRepo, "repo", "r", "", "GitHub repository (owner/repo)")
 	scanCmd.Flags().StringVarP(&ghFilePath, "file", "f", "", "Path to file inside the repo")
-	scanCmd.Flags().StringVar(&ghDir, "dir", "", "Path to Terraform directory in Github")
+	scanCmd.Flags().StringVarP(&ghDir, "dir", "d", "", "Path to Terraform directory in Github")
+	scanCmd.Flags().StringSliceVar(&scanOnly, "only", nil, "Comma-separated scanners to run (ec2,s3,sg,iam,vpc)")
+	scanCmd.Flags().StringSliceVar(&scanSkip, "skip", nil, "Comma-separated scanners to skip (ec2,s3,sg,iam,vpc)")
 	rootCmd.AddCommand(scanCmd)
+}
+
+// Filters the list of scanners based on --only and --skip flags, ensures they are mutually exclusive
+func filterScanners(all []mapper.ResourceScanner, only, skip []string) ([]mapper.ResourceScanner, error) {
+	if len(only) > 0 && len(skip) > 0 {
+		return nil, fmt.Errorf("--only and --skip are mutually exclusive")
+	}
+
+	resolve := func(aliases []string) (map[string]bool, error) {
+		types := make(map[string]bool, len(aliases))
+		for _, a := range aliases {
+			tfType, ok := scannerAliases[strings.ToLower(a)]
+			if !ok {
+				return nil, fmt.Errorf("unknown scanner %q — valid options: ec2, s3, sg, iam, vpc", a)
+			}
+			types[tfType] = true
+		}
+		return types, nil
+	}
+
+	if len(only) > 0 {
+		types, err := resolve(only)
+		if err != nil {
+			return nil, err
+		}
+		var filtered []mapper.ResourceScanner
+		for _, s := range all {
+			if types[s.TerraformType()] {
+				filtered = append(filtered, s)
+			}
+		}
+		return filtered, nil
+	}
+
+	if len(skip) > 0 {
+		types, err := resolve(skip)
+		if err != nil {
+			return nil, err
+		}
+		var filtered []mapper.ResourceScanner
+		for _, s := range all {
+			if !types[s.TerraformType()] {
+				filtered = append(filtered, s)
+			}
+		}
+		return filtered, nil
+	}
+
+	return all, nil
 }
 
 // Helper functions for GitHub API, resource comparison, and output
