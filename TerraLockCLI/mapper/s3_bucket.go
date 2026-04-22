@@ -18,20 +18,30 @@ func (s *S3BucketScanner) TerraformType() string { return "aws_s3_bucket" }
 func (s *S3BucketScanner) Fetch(ctx context.Context, cfg aws.Config) ([]LiveResource, error) {
 	client := s3.NewFromConfig(cfg)
 
-	output, err := client.ListBuckets(ctx, &s3.ListBucketsInput{})
+	output, err := client.ListBuckets(ctx, &s3.ListBucketsInput{}) // Only api call needed to list all buckets
 	if err != nil {
 		return nil, fmt.Errorf("ListBuckets failed: %w", err)
 	}
 
 	var resources []LiveResource
-	for _, bucket := range output.Buckets {
+	for _, bucket := range output.Buckets { // For each bucket, get its name and tags
 		name := aws.ToString(bucket.Name)
+
+		tags := map[string]string{}
+		tagsOut, err := client.GetBucketTagging(ctx, &s3.GetBucketTaggingInput{Bucket: bucket.Name})
+		if err == nil {
+			for _, t := range tagsOut.TagSet {
+				tags[aws.ToString(t.Key)] = aws.ToString(t.Value)
+			}
+		}
+
 		resources = append(resources, LiveResource{
 			ID:   name,
 			Name: name,
 			Attrs: map[string]string{
 				"bucket": name,
 			},
+			Tags: tags,
 		})
 	}
 	return resources, nil
@@ -57,6 +67,37 @@ func (s *S3BucketScanner) FindMissing(terraform []TerraformResource, live []Live
 	}
 	return missing
 
+}
+
+// compares tags of live S3 buckets to their Terraform counterparts, returns slice TagDrift representing any differences found, uses bucket name for matching
+func (s *S3BucketScanner) FindTagDrift(terraform []TerraformResource, live []LiveResource) []TagDrift {
+	tfTagsByName := map[string]map[string]string{}
+	for _, r := range terraform {
+		if r.Type != s.TerraformType() {
+			continue
+		}
+		if name, ok := r.Attributes["bucket"]; ok {
+			tfTagsByName[strings.Trim(name, "\"")] = parseAllTags(r.Attributes["tags"])
+		}
+	}
+
+	var drifts []TagDrift // For each live bucket, compare its tags to the corresponding Terraform resource's tags, matched by bucket name
+	for _, r := range live {
+		if r.Tags == nil {
+			continue
+		}
+		tfTags, matched := tfTagsByName[r.Name]
+		if !matched {
+			continue
+		}
+		drifts = append(drifts, compareTags(r, tfTags)...)
+	}
+	return drifts
+}
+
+// S3 buckets have no literal attributes to compare beyond the bucket name (which is the matching key)
+func (s *S3BucketScanner) FindAttrDrift(_ []TerraformResource, _ []LiveResource) []AttrDrift {
+	return nil
 }
 
 // Converts a LiveResource representing an S3 bucket into a Terraform HCL block string, using a provided label for the resource name
