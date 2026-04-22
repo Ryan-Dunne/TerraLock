@@ -13,6 +13,7 @@ type TerraformResource struct {
 	Type       string
 	Name       string
 	Attributes map[string]string
+	Blocks     []Block
 }
 
 func ParseTerraform(path string) ([]TerraformResource, error) {
@@ -47,29 +48,53 @@ func ParseTerraform(path string) ([]TerraformResource, error) {
 
 	var TerraformResources []TerraformResource
 
-	for _, block := range content.Blocks { // Runs over each block, extracts attributes, adds to slice
-
-		attributes := GetAttributes(block.Body, data)
+	for _, block := range content.Blocks { // Iterate over each resource block found in file, extract attributes & nested blocks, append to TerraformResources slice
+		attributes, tfBlocks := GetAttributesAndBlocks(block.Body, data)
 		TerraformResources = append(TerraformResources, TerraformResource{
 			Type:       block.Labels[0],
 			Name:       block.Labels[1],
 			Attributes: attributes,
+			Blocks:     tfBlocks,
 		})
 	}
 	return TerraformResources, nil
 }
 
-func GetAttributes(body hcl.Body, fileBytes []byte) map[string]string {
+// GetAttributesAndBlocks extracts both flat attributes and nested ingress/egress blocks from a resource body
+func GetAttributesAndBlocks(body hcl.Body, fileBytes []byte) (map[string]string, []Block) {
+	nestedSchema := &hcl.BodySchema{
+		Blocks: []hcl.BlockHeaderSchema{
+			{Type: "ingress"},
+			{Type: "egress"},
+		},
+	}
+	blockContent, remain, _ := body.PartialContent(nestedSchema) // Extract toplevel attributes first, look for any nested blocks defined in schema, extract their attributes as well
 
-	attrs, _ := body.JustAttributes() // Gets all attributes in the block, doesnt support nested blocks yet, discards error they may cause
-
-	out := map[string]string{} // Create map to store attribute names and their raw values as strings
-
-	for name, attr := range attrs { // Loop over each attribute
-		r := attr.Expr.Range()                            //Get range in file
-		raw := string(fileBytes[r.Start.Byte:r.End.Byte]) //Extract raw value as string using range
+	attrs, _ := remain.JustAttributes()
+	out := map[string]string{} // Extract flat attributes from the resource body, get raw HCL values using the file byte slice and store in output map
+	for name, attr := range attrs {
+		r := attr.Expr.Range()
+		raw := string(fileBytes[r.Start.Byte:r.End.Byte])
 		out[name] = strings.TrimSpace(raw)
 	}
 
+	var blocks []Block
+	for _, b := range blockContent.Blocks { // Iterate over any nested blocks found, extract their attributes into a Block struct with type & attribute map
+		bAttrs, _ := b.Body.JustAttributes()
+		bAttrsMap := map[string]string{}
+		for name, attr := range bAttrs {
+			r := attr.Expr.Range()
+			raw := string(fileBytes[r.Start.Byte:r.End.Byte])
+			bAttrsMap[name] = strings.TrimSpace(raw)
+		}
+		blocks = append(blocks, Block{Type: b.Type, Attrs: bAttrsMap})
+	}
+
+	return out, blocks
+}
+
+// Returns a slice of LiveResources representing VPCs that exist in Terraform but not in AWS, uses "name" for comparison
+func GetAttributes(body hcl.Body, fileBytes []byte) map[string]string {
+	out, _ := GetAttributesAndBlocks(body, fileBytes)
 	return out
 }
