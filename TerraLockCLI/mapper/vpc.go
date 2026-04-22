@@ -11,8 +11,10 @@ import (
 
 type VPCScanner struct{}
 
+// TerraformType returns the Terraform resource type for VPCs
 func (s *VPCScanner) TerraformType() string { return "aws_vpc" }
 
+// Fetches live VPCs from AWS, returns slice of LiveResources with relevant attributes extracted from each VPC
 func (s *VPCScanner) Fetch(ctx context.Context, cfg aws.Config) ([]LiveResource, error) {
 	client := ec2.NewFromConfig(cfg)
 
@@ -48,6 +50,7 @@ func (s *VPCScanner) Fetch(ctx context.Context, cfg aws.Config) ([]LiveResource,
 	return resources, nil
 }
 
+// Returns a slice of LiveResources representing VPCs that exist in AWS but not in Terraform, uses "name" attribute for comparison
 func (s *VPCScanner) FindMissing(terraform []TerraformResource, live []LiveResource) []LiveResource {
 	known := map[string]struct{}{}
 	for _, resource := range terraform {
@@ -71,6 +74,7 @@ func (s *VPCScanner) FindMissing(terraform []TerraformResource, live []LiveResou
 	return missing
 }
 
+// Converts LiveResource representing a VPC into a Terraform HCL block String
 func (s *VPCScanner) ToHCL(r LiveResource, label string) string {
 	var b strings.Builder
 	b.WriteString(fmt.Sprintf("resource \"aws_vpc\" \"%s\" {\n", label))

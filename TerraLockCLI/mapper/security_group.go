@@ -12,8 +12,10 @@ import (
 
 type SecurityGroupScanner struct{}
 
+// TerraformType returns the Terraform resource type for security groups
 func (s *SecurityGroupScanner) TerraformType() string { return "aws_security_group" }
 
+// Fetches live security groups from AWS, returns slice of LiveResources with relevant attributes extracted from each group
 func (s *SecurityGroupScanner) Fetch(ctx context.Context, cfg aws.Config) ([]LiveResource, error) {
 	client := ec2.NewFromConfig(cfg)
 
@@ -67,6 +69,7 @@ func (s *SecurityGroupScanner) Fetch(ctx context.Context, cfg aws.Config) ([]Liv
 	return resources, nil
 }
 
+// Converts an EC2 IpPermission to a Block representing either an ingress or egress rule in a security group, extracting protocol, ports, and CIDR blocks
 func ipPermissionToBlock(blockType string, perm ec2types.IpPermission) Block {
 	fromPort := int32(0)
 	toPort := int32(0)
@@ -103,6 +106,7 @@ func ipPermissionToBlock(blockType string, perm ec2types.IpPermission) Block {
 	}
 }
 
+// Returns a slice of LiveResources representing security groups that exist in AWS but not in Terraform, uses "name" attribute for comparison
 func (s *SecurityGroupScanner) FindMissing(terraform []TerraformResource, live []LiveResource) []LiveResource {
 	known := map[string]struct{}{}
 	for _, resource := range terraform {
@@ -123,6 +127,7 @@ func (s *SecurityGroupScanner) FindMissing(terraform []TerraformResource, live [
 	return missing
 }
 
+// Converts LiveResource representing a security group into a Terraform HCL block String
 func (s *SecurityGroupScanner) ToHCL(r LiveResource, label string) string {
 	var b strings.Builder
 	b.WriteString(fmt.Sprintf("\nresource \"aws_security_group\" \"%s\" {\n", label))
