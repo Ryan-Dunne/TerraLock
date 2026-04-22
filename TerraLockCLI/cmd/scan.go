@@ -96,13 +96,13 @@ var scanCmd = &cobra.Command{
 			combinedTerraform.WriteString("\n")
 		}
 
-		ghOutputFilename := fmt.Sprintf("gh-output-%d.tf", time.Now().Unix())
+		ghOutputFilename := fmt.Sprintf("gh-output-%d.tf", time.Now().Unix()) //Write combined Terraform to temp file for parsing
 		err := os.WriteFile(ghOutputFilename, []byte(combinedTerraform.String()), 0644)
 		if err != nil {
 			log.Fatalf("failed to write output: %v", err)
 		}
 
-		defer os.Remove(ghOutputFilename)
+		defer os.Remove(ghOutputFilename) //Clean up temp file after execution
 
 		terraform, err := mapper.ParseTerraform(ghOutputFilename)
 		if err != nil {
@@ -123,15 +123,15 @@ var scanCmd = &cobra.Command{
 			log.Fatal(err)
 		}
 		var allResults []scannerResult
-		for _, scanner := range scanners {
+		for _, scanner := range scanners { // Iterate through each scanner (EC2, S3, etc.)
 			live, err := scanner.Fetch(context.TODO(), cfg)
 			if err != nil {
 				log.Fatal(err)
 			}
 
-			missing := scanner.FindMissing(terraform, live) //Compares live resources to declared IaC
+			missing := scanner.FindMissing(terraform, live) // Print summary for this scanner type
 			fmt.Printf("  %s: %d live, %d missing\n", scanner.TerraformType(), len(live), len(missing))
-			allResults = append(allResults, scannerResult{scanner, missing})
+			allResults = append(allResults, scannerResult{scanner, missing}) // Collect results for output file generation later
 		}
 
 		totalMissing := 0
@@ -181,7 +181,7 @@ func filterScanners(all []mapper.ResourceScanner, only, skip []string) ([]mapper
 		return types, nil
 	}
 
-	if len(only) > 0 {
+	if len(only) > 0 { // If --only is specified, include only those scanners
 		types, err := resolve(only)
 		if err != nil {
 			return nil, err
@@ -195,7 +195,7 @@ func filterScanners(all []mapper.ResourceScanner, only, skip []string) ([]mapper
 		return filtered, nil
 	}
 
-	if len(skip) > 0 {
+	if len(skip) > 0 { // If --skip is specified, exclude those scanners
 		types, err := resolve(skip)
 		if err != nil {
 			return nil, err

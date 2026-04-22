@@ -14,6 +14,7 @@ import (
 
 type IAMRoleScanner struct{}
 
+// Fetches live IAM Roles from AWS, returns slice of LiveResources w/ attributes extracted from each role.
 func (s *IAMRoleScanner) TerraformType() string { return "aws_iam_role" }
 
 func (s *IAMRoleScanner) Fetch(ctx context.Context, cfg aws.Config) ([]LiveResource, error) {
@@ -58,6 +59,7 @@ func (s *IAMRoleScanner) Fetch(ctx context.Context, cfg aws.Config) ([]LiveResou
 	return resources, nil
 }
 
+// Compares live IAM Roles to those declared in Terraform, returns slice of LiveResources that exist in AWS but not in Terraform, uses "name" attribute
 func (s *IAMRoleScanner) FindMissing(terraform []TerraformResource, live []LiveResource) []LiveResource {
 	known := map[string]struct{}{}
 	for _, resource := range terraform {
@@ -81,6 +83,7 @@ func (s *IAMRoleScanner) FindMissing(terraform []TerraformResource, live []LiveR
 	return missing
 }
 
+// Converts a LiveResource representing an IAM Role into a Terraform HCL block string, using a provided label for the resource name
 func (s *IAMRoleScanner) ToHCL(r LiveResource, label string) string {
 	var b strings.Builder
 	b.WriteString(fmt.Sprintf("\nresource \"aws_iam_role\" \"%s\" {\n", label))

@@ -11,19 +11,21 @@ import (
 
 type EC2InstanceScanner struct{}
 
+// Returns the Terraform resource type that this scanner is responsible for,"aws_instance" for here
 func (s *EC2InstanceScanner) TerraformType() string { return "aws_instance" }
 
-func (s *EC2InstanceScanner) Fetch(ctx context.Context, cfg aws.Config) ([]LiveResource, error) {
+// Fetches live EC2 instances from AWS, returns slice of LiveResources with relevant attributes extracted from each instamce
+func (s *EC2InstanceScanner) Fetch(ctx context.Context, cfg aws.Config) ([]LiveResource, error) { 
 	client := ec2.NewFromConfig(cfg)
 
 	var resources []LiveResource
-	paginator := ec2.NewDescribeInstancesPaginator(client, &ec2.DescribeInstancesInput{})
+	paginator := ec2.NewDescribeInstancesPaginator(client, &ec2.DescribeInstancesInput{}) //If theres multiple pages, pagination will get them all
 	for paginator.HasMorePages() {
 		output, err := paginator.NextPage(ctx)
 		if err != nil {
 			return nil, fmt.Errorf("DescribeInstances failed: %w", err)
 		}
-		for _, reservation := range output.Reservations {
+		for _, reservation := range output.Reservations { //Iterate through each reservation, then through each instance within to get attributes & tags for LiveResource
 			for _, instance := range reservation.Instances {
 			name := ""
 			for _, tag := range instance.Tags {

@@ -11,8 +11,10 @@ import (
 
 type S3BucketScanner struct{}
 
+// Returns the Terraform resource type that this scanner is responsible for,"aws_s3_bucket" for here
 func (s *S3BucketScanner) TerraformType() string { return "aws_s3_bucket" }
 
+// Fetches live S3 buckets from AWS, returns slice of LiveResources with relevant attributes extracted from each bucket
 func (s *S3BucketScanner) Fetch(ctx context.Context, cfg aws.Config) ([]LiveResource, error) {
 	client := s3.NewFromConfig(cfg)
 
@@ -34,6 +36,8 @@ func (s *S3BucketScanner) Fetch(ctx context.Context, cfg aws.Config) ([]LiveReso
 	}
 	return resources, nil
 }
+
+// Returns a slice of LiveResources representing S3 buckets that exist in AWS but not in Terraform
 func (s *S3BucketScanner) FindMissing(terraform []TerraformResource, live []LiveResource) []LiveResource {
 	known := map[string]struct{}{}
 	for _, resource := range terraform {
@@ -54,6 +58,8 @@ func (s *S3BucketScanner) FindMissing(terraform []TerraformResource, live []Live
 	return missing
 
 }
+
+// Converts a LiveResource representing an S3 bucket into a Terraform HCL block string, using a provided label for the resource name
 
 func (s *S3BucketScanner) ToHCL(r LiveResource, label string) string {
 	var b strings.Builder
