@@ -3,11 +3,23 @@ package mapper
 import (
 	"context"
 	"fmt"
+	"regexp"
 	"strings"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/service/ec2"
 )
+
+var tagPairRe = regexp.MustCompile(`"?([\w-]+)"?\s*=\s*"([^"]*)"`)
+
+// parseAllTags extracts all key/value pairs from a raw Terraform tags block expression
+func parseAllTags(tagsExpr string) map[string]string {
+	tags := map[string]string{}
+	for _, m := range tagPairRe.FindAllStringSubmatch(tagsExpr, -1) {
+		tags[m[1]] = m[2]
+	}
+	return tags
+}
 
 type EC2InstanceScanner struct{}
 
@@ -28,10 +40,13 @@ func (s *EC2InstanceScanner) Fetch(ctx context.Context, cfg aws.Config) ([]LiveR
 		for _, reservation := range output.Reservations { //Iterate through each reservation, then through each instance within to get attributes & tags for LiveResource
 			for _, instance := range reservation.Instances {
 			name := ""
+			tags := map[string]string{}
 			for _, tag := range instance.Tags {
-				if aws.ToString(tag.Key) == "Name" {
-					name = aws.ToString(tag.Value)
-					break
+				k := aws.ToString(tag.Key)
+				v := aws.ToString(tag.Value)
+				tags[k] = v
+				if k == "Name" {
+					name = v
 				}
 			}
 
@@ -39,6 +54,10 @@ func (s *EC2InstanceScanner) Fetch(ctx context.Context, cfg aws.Config) ([]LiveR
 				"ami":               aws.ToString(instance.ImageId),
 				"instance_type":     string(instance.InstanceType),
 				"availability_zone": aws.ToString(instance.Placement.AvailabilityZone),
+				"tenancy":           string(instance.Placement.Tenancy),
+			}
+			if kn := aws.ToString(instance.KeyName); kn != "" {
+				attrs["key_name"] = kn
 			}
 			if id := aws.ToString(instance.SubnetId); id != "" {
 				attrs["subnet_id"] = id
@@ -51,6 +70,7 @@ func (s *EC2InstanceScanner) Fetch(ctx context.Context, cfg aws.Config) ([]LiveR
 				ID:    aws.ToString(instance.InstanceId),
 				Name:  name,
 				Attrs: attrs,
+				Tags:  tags,
 			})
 			}
 		}
@@ -80,6 +100,49 @@ func (s *EC2InstanceScanner) FindMissing(terraform []TerraformResource, live []L
 		}
 	}
 	return missing
+}
+
+// Compares live EC2 instances to Terraform resources by Name tag, returns tag value discrepancies
+func (s *EC2InstanceScanner) FindTagDrift(terraform []TerraformResource, live []LiveResource) []TagDrift {
+	return findTagDriftByNameTag(terraform, live, s.TerraformType())
+}
+
+// Compares live EC2 instances to Terraform resources, returns attribute value discrepancies for ami and instance_type
+func (s *EC2InstanceScanner) FindAttrDrift(terraform []TerraformResource, live []LiveResource) []AttrDrift {
+	comparable := []string{"ami", "instance_type", "key_name", "tenancy"}
+
+	tfByName := map[string]map[string]string{}
+	for _, r := range terraform {
+		if r.Type != s.TerraformType() {
+			continue
+		}
+		if name := extractTagName(r.Attributes["tags"]); name != "" {
+			tfByName[name] = r.Attributes
+		}
+	}
+
+	var drifts []AttrDrift
+	for _, r := range live {
+		tfAttrs, ok := tfByName[r.Name]
+		if !ok {
+			continue
+		}
+		for _, key := range comparable {
+			liveVal, hasLive := r.Attrs[key]
+			tfRaw, hasTF := tfAttrs[key]
+			if !hasLive || !hasTF {
+				continue
+			}
+			tfVal, ok := parseLiteralAttr(tfRaw)
+			if !ok {
+				continue
+			}
+			if liveVal != tfVal {
+				drifts = append(drifts, AttrDrift{Resource: r, Key: key, LiveVal: liveVal, TFVal: tfVal})
+			}
+		}
+	}
+	return drifts
 }
 
 // Converts a LiveResource representing an EC2 instance into a Terraform HCL block string, using a provided label for the resource name
