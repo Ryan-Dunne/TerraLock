@@ -30,19 +30,24 @@ func (s *VPCScanner) Fetch(ctx context.Context, cfg aws.Config) ([]LiveResource,
 				continue
 			}
 			name := ""
-			for _, tag := range vpc.Tags {
-				if aws.ToString(tag.Key) == "Name" {
-					name = aws.ToString(tag.Value)
-					break
+			tags := map[string]string{}
+			for _, tag := range vpc.Tags { //Extract tags from VPCs,Looks for "Name" tag to use as resource name
+				k := aws.ToString(tag.Key)
+				v := aws.ToString(tag.Value)
+				tags[k] = v
+				if k == "Name" {
+					name = v
 				}
 			}
 			attrs := map[string]string{
-				"cidr_block": aws.ToString(vpc.CidrBlock),
+				"cidr_block":       aws.ToString(vpc.CidrBlock),
+				"instance_tenancy": string(vpc.InstanceTenancy),
 			}
 			resources = append(resources, LiveResource{
 				ID:    aws.ToString(vpc.VpcId),
 				Name:  name,
 				Attrs: attrs,
+				Tags:  tags,
 			})
 
 		}
@@ -67,11 +72,54 @@ func (s *VPCScanner) FindMissing(terraform []TerraformResource, live []LiveResou
 		if resource.Name == "" {
 			continue
 		}
-		if _, exists := known[resource.Name]; !exists {
+		if _, exists := known[resource.Name]; !exists { //If the Name tag value of live VPC doesn't exist in the known map built from Terraform resources, it's missing from IaC
 			missing = append(missing, resource)
 		}
 	}
 	return missing
+}
+
+// Compares live VPCs to Terraform resources by Name tag, returns tag value discrepancies
+func (s *VPCScanner) FindTagDrift(terraform []TerraformResource, live []LiveResource) []TagDrift {
+	return findTagDriftByNameTag(terraform, live, s.TerraformType())
+}
+
+// Compares live VPCs to Terraform resources, returns attribute value discrepancies for cidr_block
+func (s *VPCScanner) FindAttrDrift(terraform []TerraformResource, live []LiveResource) []AttrDrift {
+	comparable := []string{"cidr_block", "instance_tenancy"}
+
+	tfByName := map[string]map[string]string{}
+	for _, r := range terraform {
+		if r.Type != s.TerraformType() {
+			continue
+		}
+		if name := extractTagName(r.Attributes["tags"]); name != "" {
+			tfByName[name] = r.Attributes
+		}
+	}
+
+	var drifts []AttrDrift
+	for _, r := range live {
+		tfAttrs, ok := tfByName[r.Name]
+		if !ok {
+			continue
+		}
+		for _, key := range comparable { // Only compare attributes that are relevant for VPCs
+			liveVal, hasLive := r.Attrs[key]
+			tfRaw, hasTF := tfAttrs[key]
+			if !hasLive || !hasTF {
+				continue
+			}
+			tfVal, ok := parseLiteralAttr(tfRaw)
+			if !ok {
+				continue
+			}
+			if liveVal != tfVal {
+				drifts = append(drifts, AttrDrift{Resource: r, Key: key, LiveVal: liveVal, TFVal: tfVal})
+			}
+		}
+	}
+	return drifts
 }
 
 // Converts LiveResource representing a VPC into a Terraform HCL block String
