@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/url"
+	"sort"
 	"strings"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
@@ -49,10 +50,19 @@ func (s *IAMRoleScanner) Fetch(ctx context.Context, cfg aws.Config) ([]LiveResou
 				attrs["max_session_duration"] = fmt.Sprintf("%d", aws.ToInt32(role.MaxSessionDuration))
 			}
 
+			tags := map[string]string{}
+			tagsOut, err := client.ListRoleTags(ctx, &iam.ListRoleTagsInput{RoleName: role.RoleName})
+			if err == nil {
+				for _, t := range tagsOut.Tags {
+					tags[aws.ToString(t.Key)] = aws.ToString(t.Value)
+				}
+			}
+
 			resources = append(resources, LiveResource{
 				ID:    aws.ToString(role.RoleId),
 				Name:  aws.ToString(role.RoleName),
 				Attrs: attrs,
+				Tags:  tags,
 			})
 		}
 	}
@@ -81,6 +91,76 @@ func (s *IAMRoleScanner) FindMissing(terraform []TerraformResource, live []LiveR
 		}
 	}
 	return missing
+}
+
+// Compares live IAM roles to Terraform resources by role name, returns tag value discrepancies
+func (s *IAMRoleScanner) FindTagDrift(terraform []TerraformResource, live []LiveResource) []TagDrift {
+	tfTagsByName := map[string]map[string]string{}
+	for _, r := range terraform {
+		if r.Type != s.TerraformType() {
+			continue
+		}
+		if name, ok := r.Attributes["name"]; ok {
+			tfTagsByName[strings.Trim(name, "\"")] = parseAllTags(r.Attributes["tags"])
+		}
+	}
+
+	var drifts []TagDrift
+	for _, r := range live {
+		if r.Tags == nil {
+			continue
+		}
+		tfTags, matched := tfTagsByName[r.Name]
+		if !matched {
+			continue
+		}
+		drifts = append(drifts, compareTags(r, tfTags)...)
+	}
+	sort.Slice(drifts, func(i, j int) bool {
+		if drifts[i].Resource.Name != drifts[j].Resource.Name {
+			return drifts[i].Resource.Name < drifts[j].Resource.Name
+		}
+		return drifts[i].Key < drifts[j].Key
+	})
+	return drifts
+}
+
+// Compares live IAM roles to Terraform resources, returns attribute value discrepancies for description, max_session_duration, and path
+func (s *IAMRoleScanner) FindAttrDrift(terraform []TerraformResource, live []LiveResource) []AttrDrift {
+	comparable := []string{"description", "max_session_duration", "path"}
+
+	tfByName := map[string]map[string]string{}
+	for _, r := range terraform {
+		if r.Type != s.TerraformType() {
+			continue
+		}
+		if name, ok := r.Attributes["name"]; ok {
+			tfByName[strings.Trim(name, "\"")] = r.Attributes
+		}
+	}
+
+	var drifts []AttrDrift
+	for _, r := range live {
+		tfAttrs, ok := tfByName[r.Name]
+		if !ok {
+			continue
+		}
+		for _, key := range comparable {
+			liveVal, hasLive := r.Attrs[key]
+			tfRaw, hasTF := tfAttrs[key]
+			if !hasLive || !hasTF {
+				continue
+			}
+			tfVal, ok := parseLiteralAttr(tfRaw)
+			if !ok {
+				continue
+			}
+			if liveVal != tfVal {
+				drifts = append(drifts, AttrDrift{Resource: r, Key: key, LiveVal: liveVal, TFVal: tfVal})
+			}
+		}
+	}
+	return drifts
 }
 
 // Converts a LiveResource representing an IAM Role into a Terraform HCL block string, using a provided label for the resource name

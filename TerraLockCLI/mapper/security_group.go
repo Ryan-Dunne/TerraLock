@@ -3,6 +3,7 @@ package mapper
 import (
 	"context"
 	"fmt"
+	"sort"
 	"strings"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
@@ -32,10 +33,13 @@ func (s *SecurityGroupScanner) Fetch(ctx context.Context, cfg aws.Config) ([]Liv
 			}
 
 			name := ""
+			tags := map[string]string{}
 			for _, tag := range sg.Tags {
-				if aws.ToString(tag.Key) == "Name" {
-					name = aws.ToString(tag.Value)
-					break
+				k := aws.ToString(tag.Key)
+				v := aws.ToString(tag.Value)
+				tags[k] = v
+				if k == "Name" {
+					name = v
 				}
 			}
 			if name == "" {
@@ -62,6 +66,7 @@ func (s *SecurityGroupScanner) Fetch(ctx context.Context, cfg aws.Config) ([]Liv
 				ID:     aws.ToString(sg.GroupId),
 				Name:   name,
 				Attrs:  attrs,
+				Tags:   tags,
 				Blocks: blocks,
 			})
 		}
@@ -125,6 +130,121 @@ func (s *SecurityGroupScanner) FindMissing(terraform []TerraformResource, live [
 		}
 	}
 	return missing
+}
+
+// Compares live security groups to Terraform resources by Name tag, returns tag value discrepancies
+func (s *SecurityGroupScanner) FindTagDrift(terraform []TerraformResource, live []LiveResource) []TagDrift {
+	return findTagDriftByNameTag(terraform, live, s.TerraformType())
+}
+
+// normalizeCIDRList normalises both TF list literals ["a","b"] and live comma-separated "a,b" to a sorted string
+func normalizeCIDRList(raw string) string {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return ""
+	}
+	var cidrs []string
+	if strings.HasPrefix(raw, "[") {
+		raw = strings.Trim(raw, "[]")
+		for _, part := range strings.Split(raw, ",") {
+			cidr := strings.Trim(strings.TrimSpace(part), "\"")
+			if cidr != "" {
+				cidrs = append(cidrs, cidr)
+			}
+		}
+	} else {
+		for _, part := range strings.Split(raw, ",") {
+			if cidr := strings.TrimSpace(part); cidr != "" {
+				cidrs = append(cidrs, cidr)
+			}
+		}
+	}
+	sort.Strings(cidrs)
+	return strings.Join(cidrs, ",")
+}
+
+// normalizeRuleAttr strips surrounding quotes from a raw HCL scalar value
+func normalizeRuleAttr(raw string) string {
+	if v, ok := parseLiteralAttr(raw); ok {
+		return v
+	}
+	return raw
+}
+
+// canonicalRule produces a normalised string representation of an ingress/egress rule for set comparison
+func canonicalRule(blockType string, attrs map[string]string) string {
+	return fmt.Sprintf("%s:%s:%s-%s:ipv4=%s:ipv6=%s",
+		blockType,
+		normalizeRuleAttr(attrs["protocol"]),
+		normalizeRuleAttr(attrs["from_port"]),
+		normalizeRuleAttr(attrs["to_port"]),
+		normalizeCIDRList(attrs["cidr_blocks"]),
+		normalizeCIDRList(attrs["ipv6_cidr_blocks"]),
+	)
+}
+
+// Compares live security groups to Terraform resources, returns discrepancies for description and ingress/egress rules
+func (s *SecurityGroupScanner) FindAttrDrift(terraform []TerraformResource, live []LiveResource) []AttrDrift {
+	comparable := []string{"description"}
+
+	type tfRecord struct {
+		attrs  map[string]string
+		blocks []Block
+	}
+	tfByName := map[string]tfRecord{}
+	for _, r := range terraform {
+		if r.Type != s.TerraformType() {
+			continue
+		}
+		if name, ok := r.Attributes["name"]; ok {
+			tfByName[strings.Trim(name, "\"")] = tfRecord{r.Attributes, r.Blocks}
+		}
+	}
+
+	var drifts []AttrDrift
+	for _, r := range live {
+		rec, ok := tfByName[r.Attrs["name"]]
+		if !ok {
+			continue
+		}
+
+		// Compare flat attributes
+		for _, key := range comparable {
+			liveVal, hasLive := r.Attrs[key]
+			tfRaw, hasTF := rec.attrs[key]
+			if !hasLive || !hasTF {
+				continue
+			}
+			tfVal, ok := parseLiteralAttr(tfRaw)
+			if !ok {
+				continue
+			}
+			if liveVal != tfVal {
+				drifts = append(drifts, AttrDrift{Resource: r, Key: key, LiveVal: liveVal, TFVal: tfVal})
+			}
+		}
+
+		// Compare ingress/egress rules as sets
+		liveRules := map[string]struct{}{}
+		for _, b := range r.Blocks {
+			liveRules[canonicalRule(b.Type, b.Attrs)] = struct{}{}
+		}
+		tfRules := map[string]struct{}{}
+		for _, b := range rec.blocks {
+			tfRules[canonicalRule(b.Type, b.Attrs)] = struct{}{}
+		}
+		for rule := range liveRules {
+			if _, exists := tfRules[rule]; !exists {
+				drifts = append(drifts, AttrDrift{Resource: r, Key: "rule", LiveVal: rule, TFVal: ""})
+			}
+		}
+		for rule := range tfRules {
+			if _, exists := liveRules[rule]; !exists {
+				drifts = append(drifts, AttrDrift{Resource: r, Key: "rule", LiveVal: "", TFVal: rule})
+			}
+		}
+	}
+	return drifts
 }
 
 // Converts LiveResource representing a security group into a Terraform HCL block String
